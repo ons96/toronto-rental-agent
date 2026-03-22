@@ -27,7 +27,10 @@ jobs:
             requests beautifulsoup4 lxml aiohttp \
             geopy haversine python-telegram-bot \
             openai anthropic python-dotenv \
-            retry ratelimit curl_cffi cloudscraper
+            retry ratelimit curl_cffi cloudscraper \
+            playwright
+          # Install chromium for Kijiji (apt-get works in GH Actions)
+          playwright install chromium --with-deps
 
       - name: Restore data cache
         uses: actions/cache@v4
@@ -42,8 +45,8 @@ jobs:
           python3 - << 'EOF'
           import json, os
           config = {
-            "RENT_LIMIT":           int(os.environ["RENT_LIMIT"]),
-            "anchor_address":       os.environ.get("ANCHOR_ADDRESS", "222 Bay St Suite 2200, Toronto, ON"),
+            "RENT_LIMIT":           int(os.environ.get("RENT_LIMIT", "1375")),
+            "anchor_address":       os.environ.get("ANCHOR_ADDRESS", "222 Bay St, Toronto, ON"),
             "max_walking_m":        int(os.environ.get("MAX_WALKING_M", "1200")),
             "max_occupants":        int(os.environ.get("MAX_OCCUPANTS", "4")),
             "min_cleanliness":      int(os.environ.get("MIN_CLEANLINESS", "3")),
@@ -56,13 +59,13 @@ jobs:
             "llm_api_key":          os.environ.get("LLM_API_KEY", "sk-zenith-giveaway"),
             "noobrouter_api_key":   os.environ.get("NOOBROUTER_API_KEY", "sk-zenith-giveaway"),
             "supacoder_api_key":    os.environ.get("SUPACODER_API_KEY", ""),
-            "llm_base_url":         os.environ.get("LLM_BASE_URL", "https://noobrouter.azurewebsites.net/v1"),
+            "llm_base_url":         "https://noobrouter.azurewebsites.net/v1",
             "top_n_daily":          5,
             "scrape_delay_s":       2,
             "data_dir":             "data",
             "seen_file":            "data/seen.json",
             "db_file":              "data/listings.db",
-            "enabled_scrapers":     ["kijiji","zumper","rentals_ca","liv_rent","padmapper","craigslist","viewit","condos_ca"],
+            "enabled_scrapers":     ["kijiji","zumper","rentals_ca","padmapper","craigslist","viewit","condos_ca"],
           }
           with open("config.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -78,11 +81,6 @@ jobs:
           LLM_API_KEY:        ${{ secrets.LLM_API_KEY }}
           NOOBROUTER_API_KEY: ${{ secrets.NOOBROUTER_API_KEY }}
           SUPACODER_API_KEY:  ${{ secrets.SUPACODER_API_KEY }}
-          MAX_WALKING_M:      ${{ secrets.MAX_WALKING_M }}
-          MAX_OCCUPANTS:      ${{ secrets.MAX_OCCUPANTS }}
-          MIN_CLEANLINESS:    ${{ secrets.MIN_CLEANLINESS }}
-          MIN_LANDLORD_VIBE:  ${{ secrets.MIN_LANDLORD_VIBE }}
-          MAX_SCAM_RISK:      ${{ secrets.MAX_SCAM_RISK }}
 
       - name: Run agent
         run: python3 main.py

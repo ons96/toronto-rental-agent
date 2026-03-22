@@ -1,29 +1,29 @@
-"""Rentals.ca Toronto scraper."""
+"""Rentals.ca Toronto scraper - parses App.store.search inline JSON (edges[].node)."""
 import re
+import json
 import logging
-from typing import List, Dict, Any
-from bs4 import BeautifulSoup
+from typing import List, Dict, Any, Optional
 from .base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
+BASE = "https://rentals.ca"
+
 
 class RentalsCaScraper(BaseScraper):
     name = "rentals_ca"
-    base_url = "https://rentals.ca"
-    SEARCH_URL = "https://rentals.ca/toronto"
+    use_curl_cffi = True
 
     def scrape(self) -> List[Dict[str, Any]]:
         listings = []
+        # rentals.ca uses cursor-based pagination via hasNextPage/endCursor
+        # For simplicity fetch first 3 pages via offset URL params
         for page in range(1, 4):
-            url = f"{self.SEARCH_URL}?type=1,2,3,4&price_max={self.rent_limit}&p={page}"
+            url = f"{BASE}/toronto?type=1,2,3,4&price_max={self.rent_limit}&p={page}"
             resp = self._get(url)
             if not resp:
                 break
-            # Try JSON embedded in page first (faster)
-            items = self._extract_json_data(resp.text)
-            if not items:
-                items = self._parse_html(resp.text)
+            items = self._extract_listings(resp.text)
             if not items:
                 break
             listings.extend(items)
@@ -31,109 +31,93 @@ class RentalsCaScraper(BaseScraper):
         logger.info(f"[rentals_ca] Found {len(listings)} listings")
         return [self._normalize(l) for l in listings]
 
-    def _extract_json_data(self, html: str) -> List[Dict]:
-        """Rentals.ca embeds listing data in __NEXT_DATA__ or window.__data."""
-        import json
-        results = []
-        # Try Next.js data
-        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(1))
-                # Traverse to listings
-                props = data.get("props", {}).get("pageProps", {})
-                raw_listings = (
-                    props.get("listings")
-                    or props.get("searchResults", {}).get("listings", [])
-                )
-                if raw_listings:
-                    for item in raw_listings:
-                        parsed = self._parse_json_item(item)
-                        if parsed:
-                            results.append(parsed)
-                    return results
-            except json.JSONDecodeError:
-                pass
-        return []
-
-    def _parse_json_item(self, item: Dict) -> Dict | None:
+    def _extract_listings(self, html: str) -> List[Dict]:
+        m = re.search(r'response:\s*(\{)', html)
+        if not m:
+            return []
+        start = m.start(1)
+        depth, end = 0, start
+        for i, ch in enumerate(html[start:start + 500000]):
+            if ch == "{": depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = start + i + 1
+                    break
         try:
-            price = int(item.get("price") or item.get("rent") or 0)
-            if price > self.rent_limit or price == 0:
+            data = json.loads(html[start:end])
+            edges = data.get("data", {}).get("edges", [])
+            results = []
+            for edge in edges:
+                node = edge.get("node", {})
+                parsed = self._parse_node(node)
+                if parsed:
+                    results.append(parsed)
+            return results
+        except json.JSONDecodeError as e:
+            logger.debug(f"[rentals_ca] JSON error: {e}")
+            return []
+
+    def _parse_node(self, node: Dict) -> Optional[Dict]:
+        try:
+            # Price from floorPlans (take minimum)
+            floor_plans = node.get("floorPlans", [])
+            rent_range = node.get("rentRange", [])
+            if floor_plans:
+                prices = [fp.get("rent", 0) for fp in floor_plans if fp.get("rent")]
+                price = int(min(prices)) if prices else 0
+            elif rent_range:
+                price = int(rent_range[0])
+            else:
+                price = 0
+            if price == 0 or price > self.rent_limit:
                 return None
-            lid = str(item.get("id", "") or item.get("listing_id", ""))
-            slug = item.get("slug") or item.get("url_slug") or lid
-            photos = item.get("photos") or item.get("images") or []
+
+            lid = node.get("id", node.get("path", ""))
+            path = node.get("path", "")
+            url = f"{BASE}/{path}" if path else ""
+
+            # Address
+            addr_obj = node.get("address", {})
+            if isinstance(addr_obj, dict):
+                street = addr_obj.get("street", "")
+                city = addr_obj.get("city", {}).get("cityName", "Toronto") if isinstance(addr_obj.get("city"), dict) else "Toronto"
+                address = f"{street}, {city}".strip(", ")
+            else:
+                address = str(addr_obj) or "Toronto, ON"
+
+            # Coords from rentalListingLocation [lon, lat]
+            loc = node.get("rentalListingLocation", [])
+            lat = loc[1] if len(loc) >= 2 else None
+            lon = loc[0] if len(loc) >= 2 else None
+
+            # Image
+            images = node.get("images", [])
             img = ""
-            if photos:
-                first = photos[0]
-                img = first if isinstance(first, str) else first.get("url", first.get("src", ""))
-            address = (
-                item.get("address")
-                or item.get("street_address")
-                or item.get("location", {}).get("address", "Toronto, ON")
-            )
+            if images:
+                scales = images[0].get("scales", [])
+                for s in scales:
+                    if s.get("name") == "large":
+                        img = s.get("url", "")
+                        break
+                if not img and scales:
+                    img = scales[0].get("url", "")
+
+            name = node.get("rentalListingName") or node.get("name") or address
+
             return {
-                "id": f"rentals_ca_{lid}",
-                "url": f"{self.base_url}/toronto/{slug}",
-                "title": item.get("title") or item.get("name") or address,
+                "id": f"rentals_ca_{str(lid).replace('/', '_')}",
+                "url": url,
+                "title": name,
                 "price": price,
                 "address": address,
-                "description": item.get("description") or item.get("summary") or "",
+                "description": "",
                 "image_url": img,
-                "lat": item.get("latitude") or item.get("lat"),
-                "lon": item.get("longitude") or item.get("lon"),
-                "bedrooms": item.get("bedrooms") or item.get("num_bedrooms"),
-                "bathrooms": item.get("bathrooms") or item.get("num_bathrooms"),
+                "lat": lat,
+                "lon": lon,
+                "bedrooms": "",
+                "bathrooms": "",
             }
         except Exception as e:
-            logger.debug(f"[rentals_ca] json item error: {e}")
+            logger.debug(f"[rentals_ca] node error: {e}")
             return None
-
-    def _parse_html(self, html: str) -> List[Dict]:
-        soup = BeautifulSoup(html, "lxml")
-        results = []
-        for card in soup.select("[class*='listing-card'], [class*='property-card'], article"):
-            try:
-                link_el = card.select_one("a[href]")
-                price_el = card.select_one("[class*='price'], [class*='rent']")
-                title_el = card.select_one("h2, h3, [class*='title']")
-                addr_el = card.select_one("[class*='address'], [class*='location']")
-                img_el = card.select_one("img")
-
-                link = link_el["href"] if link_el else ""
-                if link and not link.startswith("http"):
-                    link = self.base_url + link
-                price_text = price_el.get_text() if price_el else "0"
-                price = self._parse_price(price_text)
-                if price > self.rent_limit or price == 0:
-                    continue
-                title = title_el.get_text(strip=True) if title_el else ""
-                address = addr_el.get_text(strip=True) if addr_el else "Toronto, ON"
-                img = ""
-                if img_el:
-                    img = img_el.get("src") or img_el.get("data-src") or ""
-                m = re.search(r'/([^/]+)$', link)
-                lid = m.group(1) if m else link
-                results.append({
-                    "id": f"rentals_ca_{lid}",
-                    "url": link,
-                    "title": title,
-                    "price": price,
-                    "address": address,
-                    "description": "",
-                    "image_url": img,
-                })
-            except Exception as e:
-                logger.debug(f"[rentals_ca] html parse error: {e}")
-        return results
-
-    @staticmethod
-    def _parse_price(text: str) -> int:
-        nums = re.findall(r'[\d,]+', str(text))
-        if nums:
-            try:
-                return int(nums[0].replace(",", ""))
-            except ValueError:
-                pass
-        return 0

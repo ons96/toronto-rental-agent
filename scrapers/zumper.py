@@ -1,110 +1,86 @@
-"""Zumper Toronto rental scraper - uses their internal JSON API."""
+"""Zumper Toronto scraper - parses inline JSON from HTML (listables/spotlight/featured)."""
 import re
+import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
+BASE = "https://www.zumper.com"
+
 
 class ZumperScraper(BaseScraper):
     name = "zumper"
-    # Zumper exposes a public search API used by their own frontend
-    API_URL = "https://www.zumper.com/api/t/1/listings"
+    use_curl_cffi = True
 
     def scrape(self) -> List[Dict[str, Any]]:
         listings = []
-        params = {
-            "accepts_pets": "false",
-            "cats": "false",
-            "dogs": "false",
-            "order_by": "ranked",
-            "page": 1,
-            "rent_max": self.rent_limit,
-            "search": "Toronto, ON",
-            "min_latitude": 43.58,
-            "max_latitude": 43.86,
-            "min_longitude": -79.64,
-            "max_longitude": -79.11,
-        }
-        for page in range(1, 4):  # 3 pages
-            params["page"] = page
-            resp = self._get(
-                self.API_URL,
-                params=params,
-                headers={
-                    **self.session.headers,
-                    "Accept": "application/json",
-                    "Referer": "https://www.zumper.com/apartments-for-rent/toronto-on",
-                    "X-Zumper-XZ-Token": self._get_xz_token(),
-                },
-            )
+        for page in range(1, 4):
+            url = f"{BASE}/apartments-for-rent/toronto-on?sort=matched&page={page}"
+            resp = self._get(url)
             if not resp:
                 break
-            try:
-                data = resp.json()
-            except Exception:
-                break
-            items = data if isinstance(data, list) else data.get("listings", data.get("data", []))
+            items = self._extract_listings(resp.text)
             if not items:
                 break
-            for item in items:
-                parsed = self._parse_item(item)
-                if parsed:
-                    listings.append(parsed)
+            listings.extend(items)
             self._sleep()
         logger.info(f"[zumper] Found {len(listings)} listings")
         return [self._normalize(l) for l in listings]
 
-    def _get_xz_token(self) -> str:
-        """Fetch XZ token from Zumper homepage (needed for API auth)."""
-        try:
-            resp = self.session.get(
-                "https://www.zumper.com/apartments-for-rent/toronto-on",
-                timeout=10,
-            )
-            m = re.search(r'"xzToken"\s*:\s*"([^"]+)"', resp.text)
-            if m:
-                return m.group(1)
-            # fallback: look in meta tags
-            m2 = re.search(r'zumper-xz-token.*?content="([^"]+)"', resp.text)
-            if m2:
-                return m2.group(1)
-        except Exception:
-            pass
-        return ""
+    def _extract_listings(self, html: str) -> List[Dict]:
+        all_items = []
+        for key in ["listables", "spotlight", "featured"]:
+            m = re.search(f'"' + key + r'":\s*(\[)', html)
+            if not m:
+                continue
+            start = m.start(1)
+            depth, end = 0, start
+            for i, ch in enumerate(html[start:start + 500000]):
+                if ch == "[": depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end = start + i + 1
+                        break
+            try:
+                arr = json.loads(html[start:end])
+                for item in arr:
+                    if isinstance(item, dict) and "listing_id" in item:
+                        parsed = self._parse_item(item)
+                        if parsed:
+                            all_items.append(parsed)
+            except Exception as e:
+                logger.debug(f"[zumper] parse {key}: {e}")
+        return all_items
 
-    def _parse_item(self, item: Dict) -> Dict | None:
+    def _parse_item(self, item: Dict) -> Optional[Dict]:
         try:
-            price = item.get("price") or item.get("rent") or 0
-            if isinstance(price, (list, tuple)):
-                price = price[0] if price else 0
-            price = int(price)
-            if price > self.rent_limit or price == 0:
+            price = item.get("min_price") or item.get("max_price") or 0
+            if not price or price > self.rent_limit:
                 return None
-            lid = str(item.get("id", ""))
-            photos = item.get("photos") or item.get("images") or []
-            img = photos[0] if photos and isinstance(photos[0], str) else ""
-            if isinstance(img, dict):
-                img = img.get("url", img.get("src", ""))
-            location = item.get("location") or {}
-            address = (
-                item.get("address")
-                or f"{location.get('street_address', '')} {location.get('city', 'Toronto')}"
-            ).strip()
+            lid = str(item.get("listing_id", ""))
+            url = item.get("url", "")
+            if url and not url.startswith("http"):
+                url = BASE + url
+            img = ""
+            image_ids = item.get("image_ids", [])
+            if image_ids:
+                img = f"https://images.zumper.com/listing-images/{image_ids[0]}/large.jpg"
             return {
                 "id": f"zumper_{lid}",
-                "url": f"https://www.zumper.com/apartments-for-rent/toronto-on/{lid}",
-                "title": item.get("name") or item.get("title") or address,
-                "price": price,
-                "address": address,
-                "description": item.get("summary") or item.get("description") or "",
+                "url": url or f"{BASE}/apartments-for-rent/toronto-on/{lid}",
+                "title": item.get("title") or item.get("building_name") or item.get("address", ""),
+                "price": int(price),
+                "address": item.get("address", "Toronto, ON"),
+                "description": item.get("short_description") or "",
                 "image_url": img,
-                "lat": location.get("latitude") or item.get("latitude"),
-                "lon": location.get("longitude") or item.get("longitude"),
-                "bedrooms": item.get("bedrooms", ""),
-                "bathrooms": item.get("bathrooms", ""),
+                "lat": item.get("lat"),
+                "lon": item.get("lng"),
+                "bedrooms": item.get("min_bedrooms"),
+                "bathrooms": item.get("min_bathrooms"),
             }
         except Exception as e:
-            logger.debug(f"[zumper] item parse error: {e}")
+            logger.debug(f"[zumper] item error: {e}")
             return None
