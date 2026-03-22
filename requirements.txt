@@ -30,3 +30,7 @@ schedule>=1.2.0
 python-dotenv>=1.0.0
 retry>=0.9.2
 ratelimit>=2.2.1
+
+# Anti-bot / TLS fingerprint spoofing
+curl_cffi>=0.7.0
+cloudscraper>=1.2.71
