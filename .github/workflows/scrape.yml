@@ -5,6 +5,9 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -62,7 +67,6 @@ jobs:
             "data_dir":             "data",
             "seen_file":            "data/seen.json",
             "db_file":              "data/listings.db",
-            # kijiji excluded - needs residential IP, run deploy/kijiji_local.py from phone/laptop
             "enabled_scrapers": ["zumper","rentals_ca","padmapper","craigslist","viewit","condos_ca"],
           }
           with open("config.json", "w") as f:
@@ -79,6 +83,20 @@ jobs:
 
       - name: Run agent
         run: python3 main.py
+
+      - name: Commit listings CSV to repo
+        run: |
+          git config user.name  "Toronto Rental Agent [bot]"
+          git config user.email "bot@toronto-rental-agent"
+          git add data/listings.csv 2>/dev/null || true
+          # Only commit if listings.csv changed
+          if git diff --cached --quiet; then
+            echo "No new listings to commit."
+          else
+            ROWS=$(python3 -c "import csv; r=list(csv.reader(open('data/listings.csv'))); print(len(r)-1)" 2>/dev/null || echo '?')
+            git commit -m "data: update listings.csv ($ROWS total listings) [skip ci]"
+            git push
+          fi
 
       - name: Upload logs
         if: always()

@@ -144,5 +144,32 @@ class Store:
         )
         self.conn.commit()
 
+
+    def export_csv(self, path: str = "data/listings.csv"):
+        """Export all qualifying listings to CSV for easy review."""
+        import csv
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        cur = self.conn.execute("""
+            SELECT
+                id, source, scraped_at, price, title, address,
+                url, image_url,
+                lat, lon, nearest_transit, transit_dist_m,
+                private_room, occupants,
+                cleanliness, landlord_vibe, scam_risk, score,
+                reasoning, description
+            FROM listings
+            ORDER BY score DESC, scraped_at DESC
+        """)
+        rows = cur.fetchall()
+        if not rows:
+            return 0
+        cols = [d[0] for d in cur.description]
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=cols)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(cols, row)))
+        return len(rows)
     def close(self):
         self.conn.close()

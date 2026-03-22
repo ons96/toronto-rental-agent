@@ -23,6 +23,7 @@ data/fb_cookies.json
 data/*.db
 data/*.json
 !data/ttc_stations.json
+!data/listings.csv
 
 # Logs
 logs/
