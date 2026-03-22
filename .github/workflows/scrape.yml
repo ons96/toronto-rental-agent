@@ -2,9 +2,8 @@ name: Toronto Rental Agent
 
 on:
   schedule:
-    # Every 4 hours
     - cron: '0 */4 * * *'
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -24,12 +23,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          # Install without heavy browser deps by default
-          pip install requests beautifulsoup4 lxml aiohttp geopy haversine \
-                      python-telegram-bot openai anthropic schedule \
-                      python-dotenv retry ratelimit
-          # Playwright only if FB scraping enabled
-          # pip install playwright && playwright install chromium --with-deps
+          pip install \
+            requests beautifulsoup4 lxml aiohttp \
+            geopy haversine python-telegram-bot \
+            openai anthropic python-dotenv \
+            retry ratelimit curl_cffi cloudscraper
 
       - name: Restore data cache
         uses: actions/cache@v4
@@ -39,35 +37,57 @@ jobs:
           restore-keys: |
             rental-data-${{ runner.os }}-
 
-      - name: Create config from secrets
+      - name: Write config from secrets
         run: |
-          cat > config.json << EOF
-          {
-            "RENT_LIMIT": ${{ secrets.RENT_LIMIT }},
-            "anchor_address": "${{ secrets.ANCHOR_ADDRESS }}",
-            "max_walking_m": 800,
-            "max_occupants": 4,
-            "min_cleanliness": 3,
-            "min_landlord_vibe": 3,
-            "max_scam_risk": 3,
-            "telegram_token": "${{ secrets.TELEGRAM_TOKEN }}",
-            "telegram_chat_id": "${{ secrets.TELEGRAM_CHAT_ID }}",
-            "llm_provider": "${{ secrets.LLM_PROVIDER }}",
-            "llm_api_key": "${{ secrets.LLM_API_KEY }}",
-            "llm_model": "${{ secrets.LLM_MODEL }}",
-            "top_n_daily": 5,
-            "scrape_delay_s": 3,
-            "data_dir": "data",
-            "seen_file": "data/seen.json",
-            "db_file": "data/listings.db",
-            "enabled_scrapers": ["kijiji","zumper","rentals_ca","liv_rent","padmapper","craigslist","viewit"]
+          python3 - << 'EOF'
+          import json, os
+          config = {
+            "RENT_LIMIT":           int(os.environ["RENT_LIMIT"]),
+            "anchor_address":       os.environ.get("ANCHOR_ADDRESS", "222 Bay St Suite 2200, Toronto, ON"),
+            "max_walking_m":        int(os.environ.get("MAX_WALKING_M", "1200")),
+            "max_occupants":        int(os.environ.get("MAX_OCCUPANTS", "4")),
+            "min_cleanliness":      int(os.environ.get("MIN_CLEANLINESS", "3")),
+            "min_landlord_vibe":    int(os.environ.get("MIN_LANDLORD_VIBE", "3")),
+            "max_scam_risk":        int(os.environ.get("MAX_SCAM_RISK", "3")),
+            "telegram_token":       os.environ["TELEGRAM_TOKEN"],
+            "telegram_chat_id":     os.environ["TELEGRAM_CHAT_ID"],
+            "llm_provider":         os.environ.get("LLM_PROVIDER", "noobrouter"),
+            "llm_model":            os.environ.get("LLM_MODEL", "openai/gpt-5.1"),
+            "llm_api_key":          os.environ.get("LLM_API_KEY", "sk-zenith-giveaway"),
+            "noobrouter_api_key":   os.environ.get("NOOBROUTER_API_KEY", "sk-zenith-giveaway"),
+            "supacoder_api_key":    os.environ.get("SUPACODER_API_KEY", ""),
+            "llm_base_url":         os.environ.get("LLM_BASE_URL", "https://noobrouter.azurewebsites.net/v1"),
+            "top_n_daily":          5,
+            "scrape_delay_s":       2,
+            "data_dir":             "data",
+            "seen_file":            "data/seen.json",
+            "db_file":              "data/listings.db",
+            "enabled_scrapers":     ["kijiji","zumper","rentals_ca","liv_rent","padmapper","craigslist","viewit","condos_ca"],
           }
+          with open("config.json", "w") as f:
+            json.dump(config, f, indent=2)
+          print("config.json written")
           EOF
+        env:
+          RENT_LIMIT:         ${{ secrets.RENT_LIMIT }}
+          ANCHOR_ADDRESS:     ${{ secrets.ANCHOR_ADDRESS }}
+          TELEGRAM_TOKEN:     ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          LLM_PROVIDER:       ${{ secrets.LLM_PROVIDER }}
+          LLM_MODEL:          ${{ secrets.LLM_MODEL }}
+          LLM_API_KEY:        ${{ secrets.LLM_API_KEY }}
+          NOOBROUTER_API_KEY: ${{ secrets.NOOBROUTER_API_KEY }}
+          SUPACODER_API_KEY:  ${{ secrets.SUPACODER_API_KEY }}
+          MAX_WALKING_M:      ${{ secrets.MAX_WALKING_M }}
+          MAX_OCCUPANTS:      ${{ secrets.MAX_OCCUPANTS }}
+          MIN_CLEANLINESS:    ${{ secrets.MIN_CLEANLINESS }}
+          MIN_LANDLORD_VIBE:  ${{ secrets.MIN_LANDLORD_VIBE }}
+          MAX_SCAM_RISK:      ${{ secrets.MAX_SCAM_RISK }}
 
       - name: Run agent
-        run: python main.py
+        run: python3 main.py
 
-      - name: Upload logs artifact
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
