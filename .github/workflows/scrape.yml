@@ -1,0 +1,76 @@
+name: Toronto Rental Agent
+
+on:
+  schedule:
+    # Every 4 hours
+    - cron: '0 */4 * * *'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install without heavy browser deps by default
+          pip install requests beautifulsoup4 lxml aiohttp geopy haversine \
+                      python-telegram-bot openai anthropic schedule \
+                      python-dotenv retry ratelimit
+          # Playwright only if FB scraping enabled
+          # pip install playwright && playwright install chromium --with-deps
+
+      - name: Restore data cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: rental-data-${{ runner.os }}-${{ github.run_number }}
+          restore-keys: |
+            rental-data-${{ runner.os }}-
+
+      - name: Create config from secrets
+        run: |
+          cat > config.json << EOF
+          {
+            "RENT_LIMIT": ${{ secrets.RENT_LIMIT }},
+            "anchor_address": "${{ secrets.ANCHOR_ADDRESS }}",
+            "max_walking_m": 800,
+            "max_occupants": 4,
+            "min_cleanliness": 3,
+            "min_landlord_vibe": 3,
+            "max_scam_risk": 3,
+            "telegram_token": "${{ secrets.TELEGRAM_TOKEN }}",
+            "telegram_chat_id": "${{ secrets.TELEGRAM_CHAT_ID }}",
+            "llm_provider": "${{ secrets.LLM_PROVIDER }}",
+            "llm_api_key": "${{ secrets.LLM_API_KEY }}",
+            "llm_model": "${{ secrets.LLM_MODEL }}",
+            "top_n_daily": 5,
+            "scrape_delay_s": 3,
+            "data_dir": "data",
+            "seen_file": "data/seen.json",
+            "db_file": "data/listings.db",
+            "enabled_scrapers": ["kijiji","zumper","rentals_ca","liv_rent","padmapper","craigslist","viewit"]
+          }
+          EOF
+
+      - name: Run agent
+        run: python main.py
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7

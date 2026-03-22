@@ -1,0 +1,32 @@
+# Core
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Async HTTP
+aiohttp>=3.9.0
+
+# Geo
+geopy>=2.4.0
+haversine>=2.8.0
+
+# Telegram
+python-telegram-bot>=21.0
+
+# LLM
+openai>=1.30.0
+anthropicAPI>=0.25.0
+
+# Storage
+# sqlite3 is stdlib
+
+# Browser automation (optional, only if needed)
+playwright>=1.44.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Utilities
+python-dotenv>=1.0.0
+retry>=0.9.2
+ratelimit>=2.2.1

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+
+# Secrets & config
+config.json
+.env
+.env.*
+!.env.example
+data/fb_cookies.json
+
+# Data (keep structure, not content)
+data/*.db
+data/*.json
+!data/ttc_stations.json
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Playwright
+playwright/.auth/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/

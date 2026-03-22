@@ -1,0 +1,33 @@
+{
+  "RENT_LIMIT": 2200,
+  "anchor_address": "1 Yonge St, Toronto, ON",
+  "max_walking_m": 800,
+  "max_occupants": 4,
+  "min_cleanliness": 3,
+  "min_landlord_vibe": 3,
+  "max_scam_risk": 3,
+  "telegram_token": "YOUR_BOT_TOKEN_HERE",
+  "telegram_chat_id": "YOUR_CHAT_ID_HERE",
+  "llm_provider": "openai",
+  "llm_api_key": "YOUR_OPENAI_KEY_HERE",
+  "llm_model": "gpt-4o-mini",
+  "top_n_daily": 5,
+  "scrape_delay_s": 2,
+  "data_dir": "data",
+  "seen_file": "data/seen.json",
+  "db_file": "data/listings.db",
+  "enabled_scrapers": [
+    "kijiji",
+    "zumper",
+    "rentals_ca",
+    "liv_rent",
+    "padmapper",
+    "craigslist",
+    "viewit",
+    "condos_ca"
+  ],
+  "_comment_fb": "Add 'facebook' to enabled_scrapers + install playwright for FB Marketplace",
+  "fb_cookies_file": "data/fb_cookies.json",
+  "_comment_ollama": "For local LLM: set llm_provider=ollama, llm_model=llama3",
+  "ollama_url": "http://localhost:11434/api/generate"
+}
