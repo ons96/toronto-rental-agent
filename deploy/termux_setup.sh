@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
-# Toronto Rental Agent - Termux (Pixel 7 / Android) Setup
+# Toronto Rental Agent - Termux (Android) Setup
+# Runs Kijiji scraper from your phone's residential IP
 # ============================================================
 set -euo pipefail
 
@@ -13,34 +14,44 @@ setup() {
 
     pip install --upgrade pip
     pip install \
-        requests beautifulsoup4 lxml aiohttp \
+        requests beautifulsoup4 lxml \
         geopy haversine python-telegram-bot \
-        openai anthropic python-dotenv \
-        retry ratelimit
+        python-dotenv retry ratelimit \
+        playwright
+
+    playwright install chromium
 
     if [ -d "$PROJECT_DIR" ]; then
         cd "$PROJECT_DIR" && git pull --ff-only
     else
-        git clone https://github.com/YOUR_USERNAME/toronto-rental-agent.git "$PROJECT_DIR"
+        git clone https://github.com/ons96/toronto-rental-agent.git "$PROJECT_DIR"
     fi
 
     mkdir -p "$PROJECT_DIR/logs" "$PROJECT_DIR/data"
 
-    # Enable crond for scheduled runs
-    sv-enable crond 2>/dev/null || true
+    if [ ! -f "$PROJECT_DIR/config.json" ]; then
+        cp "$PROJECT_DIR/config.json.example" "$PROJECT_DIR/config.json"
+        echo "⚠️  Edit $PROJECT_DIR/config.json with your credentials!"
+    fi
 
+    # Install cron job for Kijiji (runs every 4 hours, offset by 2hrs from GH Actions)
+    sv-enable crond 2>/dev/null || true
     ( crontab -l 2>/dev/null | grep -v toronto-rental-agent; \
-      echo "0 */4 * * * cd $PROJECT_DIR && python main.py >> logs/cron.log 2>&1" \
+      echo "0 */4 * * * cd $PROJECT_DIR && python3 deploy/kijiji_local.py >> logs/kijiji_cron.log 2>&1" \
     ) | crontab -
 
-    echo "Termux setup complete."
-    echo "Edit $PROJECT_DIR/config.json, then: cd $PROJECT_DIR && python main.py"
+    echo ""
+    echo "✅ Termux setup complete!"
+    echo "   1. Edit: $PROJECT_DIR/config.json"
+    echo "   2. Test:  cd $PROJECT_DIR && python3 deploy/kijiji_local.py"
+    echo "   3. Cron is set to run every 4 hours automatically"
+    echo "   Note: Keep Termux running in background with wakelock enabled"
 }
 
 run() {
     cd "$PROJECT_DIR"
     git pull --ff-only origin main 2>/dev/null || true
-    python main.py
+    python3 deploy/kijiji_local.py
 }
 
 case "${1:-run}" in
