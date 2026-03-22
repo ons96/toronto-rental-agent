@@ -1,16 +1,16 @@
 {
-  "RENT_LIMIT": 2200,
-  "anchor_address": "1 Yonge St, Toronto, ON",
-  "max_walking_m": 800,
+  "RENT_LIMIT": 1375,
+  "anchor_address": "222 Bay St Suite 2200, Toronto, ON",
+  "max_walking_m": 1200,
   "max_occupants": 4,
   "min_cleanliness": 3,
   "min_landlord_vibe": 3,
   "max_scam_risk": 3,
   "telegram_token": "YOUR_BOT_TOKEN_HERE",
   "telegram_chat_id": "YOUR_CHAT_ID_HERE",
-  "llm_provider": "openai",
-  "llm_api_key": "YOUR_OPENAI_KEY_HERE",
-  "llm_model": "gpt-4o-mini",
+  "llm_provider": "noobrouter",
+  "llm_api_key": "sk-zenith-giveaway",
+  "llm_model": "openai/gpt-5.1",
   "top_n_daily": 5,
   "scrape_delay_s": 2,
   "data_dir": "data",
@@ -29,5 +29,7 @@
   "_comment_fb": "Add 'facebook' to enabled_scrapers + install playwright for FB Marketplace",
   "fb_cookies_file": "data/fb_cookies.json",
   "_comment_ollama": "For local LLM: set llm_provider=ollama, llm_model=llama3",
-  "ollama_url": "http://localhost:11434/api/generate"
+  "ollama_url": "http://localhost:11434/api/generate",
+  "llm_base_url": "https://noobrouter.azurewebsites.net/v1",
+  "_comment_llm": "noobrouter=free primary. supacoder=free fallback (built-in). Or set llm_provider=supacoder/openai/ollama/gateway"
 }
