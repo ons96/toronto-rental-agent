@@ -32,6 +32,54 @@ python main.py --test-telegram   # verify bot works
 python main.py                   # full run
 ```
 
+
+---
+
+## Architecture: Split Scraping
+
+Some sites (Kijiji, RentCafe, Realtor.ca) use **Akamai / Incapsula bot detection** that blocks datacenter IPs (GitHub Actions, VPS, Oracle Cloud). These require a **residential IP** to scrape.
+
+```
+┌─────────────────────────────┐    ┌─────────────────────────────┐
+│   GitHub Actions (4hr cron) │    │  Your Phone/Laptop (cron)   │
+│   Datacenter IP             │    │  Residential IP ✓           │
+├─────────────────────────────┤    ├─────────────────────────────┤
+│ ✅ Craigslist (RSS+HTML)    │    │ ✅ Kijiji (Playwright)      │
+│ ✅ Zumper (JSON embed)      │    │                             │
+│ ✅ Padmapper (JSON embed)   │    │  Run: deploy/kijiji_local.py│
+│ ✅ Rentals.ca (GraphQL)     │    │  Setup: deploy/termux_setup │
+│ ✅ ViewIt (HTML)            │    │         deploy/laptop_kijiji│
+│ ✅ Condos.ca (API+HTML)     │    │                             │
+└─────────────────────────────┘    └─────────────────────────────┘
+         │                                      │
+         └──────────── Telegram Bot ────────────┘
+                   @toronto_rental_bot
+```
+
+Both pipelines are independent — they each run the full geo+LLM+score pipeline and send top matches to the same Telegram bot. They share `data/seen.json` if you sync it, but work fine independently (you might get a duplicate notification occasionally).
+
+### Kijiji on Phone (Termux)
+
+```bash
+# Install Termux from F-Droid (NOT Play Store)
+# Then in Termux:
+curl -o termux_setup.sh https://raw.githubusercontent.com/ons96/toronto-rental-agent/main/deploy/termux_setup.sh
+bash termux_setup.sh setup
+# Edit ~/toronto-rental-agent/config.json
+bash termux_setup.sh run   # test run
+# Cron runs automatically every 4 hours
+```
+
+### Kijiji on Laptop
+
+```bash
+git clone https://github.com/ons96/toronto-rental-agent.git
+cd toronto-rental-agent
+bash deploy/laptop_kijiji.sh setup
+# Copy config.json.example to config.json and fill in credentials
+bash deploy/laptop_kijiji.sh run
+```
+
 ---
 
 ## Configuration (`config.json`)

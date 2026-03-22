@@ -26,11 +26,8 @@ jobs:
           pip install \
             requests beautifulsoup4 lxml aiohttp \
             geopy haversine python-telegram-bot \
-            openai anthropic python-dotenv \
-            retry ratelimit curl_cffi cloudscraper \
-            playwright
-          # Install chromium for Kijiji (apt-get works in GH Actions)
-          playwright install chromium --with-deps
+            python-dotenv retry ratelimit \
+            curl_cffi cloudscraper
 
       - name: Restore data cache
         uses: actions/cache@v4
@@ -54,9 +51,9 @@ jobs:
             "max_scam_risk":        int(os.environ.get("MAX_SCAM_RISK", "3")),
             "telegram_token":       os.environ["TELEGRAM_TOKEN"],
             "telegram_chat_id":     os.environ["TELEGRAM_CHAT_ID"],
-            "llm_provider":         os.environ.get("LLM_PROVIDER", "noobrouter"),
-            "llm_model":            os.environ.get("LLM_MODEL", "openai/gpt-5.1"),
-            "llm_api_key":          os.environ.get("LLM_API_KEY", "sk-zenith-giveaway"),
+            "llm_provider":         "noobrouter",
+            "llm_model":            "openai/gpt-5.1",
+            "llm_api_key":          os.environ.get("NOOBROUTER_API_KEY", "sk-zenith-giveaway"),
             "noobrouter_api_key":   os.environ.get("NOOBROUTER_API_KEY", "sk-zenith-giveaway"),
             "supacoder_api_key":    os.environ.get("SUPACODER_API_KEY", ""),
             "llm_base_url":         "https://noobrouter.azurewebsites.net/v1",
@@ -65,7 +62,8 @@ jobs:
             "data_dir":             "data",
             "seen_file":            "data/seen.json",
             "db_file":              "data/listings.db",
-            "enabled_scrapers":     ["kijiji","zumper","rentals_ca","padmapper","craigslist","viewit","condos_ca"],
+            # kijiji excluded - needs residential IP, run deploy/kijiji_local.py from phone/laptop
+            "enabled_scrapers": ["zumper","rentals_ca","padmapper","craigslist","viewit","condos_ca"],
           }
           with open("config.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -76,9 +74,6 @@ jobs:
           ANCHOR_ADDRESS:     ${{ secrets.ANCHOR_ADDRESS }}
           TELEGRAM_TOKEN:     ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          LLM_PROVIDER:       ${{ secrets.LLM_PROVIDER }}
-          LLM_MODEL:          ${{ secrets.LLM_MODEL }}
-          LLM_API_KEY:        ${{ secrets.LLM_API_KEY }}
           NOOBROUTER_API_KEY: ${{ secrets.NOOBROUTER_API_KEY }}
           SUPACODER_API_KEY:  ${{ secrets.SUPACODER_API_KEY }}
 
