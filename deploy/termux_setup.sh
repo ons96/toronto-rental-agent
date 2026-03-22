@@ -37,13 +37,13 @@ setup() {
     # Install cron job for Kijiji (runs every 4 hours, offset by 2hrs from GH Actions)
     sv-enable crond 2>/dev/null || true
     ( crontab -l 2>/dev/null | grep -v toronto-rental-agent; \
-      echo "0 */4 * * * cd $PROJECT_DIR && python3 deploy/kijiji_local.py >> logs/kijiji_cron.log 2>&1" \
+      echo "0 */4 * * * cd $PROJECT_DIR && python3 deploy/residential_scraper.py >> logs/kijiji_cron.log 2>&1" \
     ) | crontab -
 
     echo ""
     echo "✅ Termux setup complete!"
     echo "   1. Edit: $PROJECT_DIR/config.json"
-    echo "   2. Test:  cd $PROJECT_DIR && python3 deploy/kijiji_local.py"
+    echo "   2. Test:  cd $PROJECT_DIR && python3 deploy/residential_scraper.py"
     echo "   3. Cron is set to run every 4 hours automatically"
     echo "   Note: Keep Termux running in background with wakelock enabled"
 }
@@ -51,7 +51,7 @@ setup() {
 run() {
     cd "$PROJECT_DIR"
     git pull --ff-only origin main 2>/dev/null || true
-    python3 deploy/kijiji_local.py
+    python3 deploy/residential_scraper.py
 }
 
 case "${1:-run}" in

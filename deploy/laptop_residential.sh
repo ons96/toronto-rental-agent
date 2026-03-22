@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Toronto Rental Agent - Laptop Kijiji Scraper
+# Toronto Rental Agent - Laptop Residential Scraper (Kijiji + Realtor.ca)
 # Run from any laptop/desktop with residential IP
 # Tested on: Ubuntu, macOS, Windows WSL2
 # ============================================================
@@ -16,15 +16,15 @@ setup() {
         python-dotenv playwright
     playwright install chromium --with-deps
     echo "✅ Laptop setup complete!"
-    echo "   Run: bash deploy/laptop_kijiji.sh run"
+    echo "   Run: bash deploy/laptop_residential.sh run"
     echo "   Or schedule with cron:"
-    echo "   0 */4 * * * cd $PROJECT_DIR && python3 deploy/kijiji_local.py >> logs/kijiji_cron.log 2>&1"
+    echo "   0 */4 * * * cd $PROJECT_DIR && python3 deploy/residential_scraper.py >> logs/kijiji_cron.log 2>&1"
 }
 
 run() {
     cd "$PROJECT_DIR"
     git pull --ff-only origin main 2>/dev/null || true
-    python3 deploy/kijiji_local.py
+    python3 deploy/residential_scraper.py
 }
 
 case "${1:-run}" in

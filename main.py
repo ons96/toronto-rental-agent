@@ -249,6 +249,12 @@ def main():
             new_listings = run_scrape(config, store)
             run_notify(config, store, new_listings)
     finally:
+        # Export CSV of all qualifying listings
+        try:
+            n = store.export_csv("data/listings.csv")
+            logger.info(f"Exported {n} listings to data/listings.csv")
+        except Exception as e:
+            logger.warning(f"CSV export failed: {e}")
         store.close()
 
 

@@ -238,9 +238,31 @@ def run(config_path: str = "config.json"):
     Path("logs").mkdir(exist_ok=True)
     Path("data").mkdir(exist_ok=True)
 
-    logger.info("Starting Kijiji local scrape...")
-    listings = scrape_kijiji_playwright(config)
-    logger.info(f"Scraped {len(listings)} raw listings")
+    all_raw = []
+
+    # Kijiji (Playwright, residential IP required)
+    logger.info("Starting Kijiji scrape...")
+    try:
+        kijiji_listings = scrape_kijiji_playwright(config)
+        logger.info(f"Kijiji: {len(kijiji_listings)} raw listings")
+        all_raw.extend(kijiji_listings)
+    except Exception as e:
+        logger.error(f"Kijiji scrape failed: {e}")
+
+    # Realtor.ca (requests, residential IP required - Incapsula blocked on datacenter)
+    logger.info("Starting Realtor.ca scrape...")
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from scrapers.realtor_ca import RealtorCaScraper
+        sc = RealtorCaScraper(config)
+        realtor_listings = sc.scrape()
+        logger.info(f"Realtor.ca: {len(realtor_listings)} raw listings")
+        all_raw.extend(realtor_listings)
+    except Exception as e:
+        logger.error(f"Realtor.ca scrape failed: {e}")
+
+    listings = all_raw
+    logger.info(f"Total raw listings: {len(listings)}")
 
     # Import pipeline modules
     from geo import geocode, is_within_range, load_ttc_stations
@@ -286,7 +308,29 @@ def run(config_path: str = "config.json"):
         logger.info(f"✅ [kijiji] {listing['title'][:50]} ${listing['price']}/mo score={listing['score']} | {label} {dist_m:.0f}m")
 
     save_seen(config, seen)
-    logger.info(f"{len(qualifying)} qualifying Kijiji listings")
+    logger.info(f"{len(qualifying)} qualifying listings from residential scrapers")
+
+    # Export CSV (append to same file as main agent if it exists)
+    if qualifying:
+        import csv
+        csv_path = Path(config.get("data_dir", "data")) / "listings.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = [
+            "id", "source", "scraped_at", "price", "title", "address",
+            "url", "image_url", "lat", "lon", "nearest_transit", "transit_dist_m",
+            "private_room", "occupants", "cleanliness", "landlord_vibe",
+            "scam_risk", "score", "reasoning",
+        ]
+        write_header = not csv_path.exists()
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            if write_header:
+                writer.writeheader()
+            for listing in qualifying:
+                row = {**listing, **listing.get("classification", {})}
+                row["scraped_at"] = __import__("datetime").datetime.utcnow().isoformat()
+                writer.writerow({k: row.get(k, "") for k in fieldnames})
+        logger.info(f"Appended {len(qualifying)} listings to {csv_path}")
 
     if qualifying:
         top_n = config.get('top_n_daily', 5)
