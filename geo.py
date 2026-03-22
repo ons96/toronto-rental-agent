@@ -16,6 +16,29 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # Simple in-process cache: address -> (lat, lon)
 _geocode_cache: Dict[str, Optional[Tuple[float, float]]] = {}
 
+# Toronto + GTA bounding box (strict: City of Toronto only)
+TORONTO_LAT_MIN = 43.58
+TORONTO_LAT_MAX = 43.86
+TORONTO_LON_MIN = -79.64
+TORONTO_LON_MAX = -79.11
+
+# Generic geocode fallback coords to reject (city-center only, no street)
+_TORONTO_GENERIC = (43.6534817, -79.3839347)  # "Toronto, ON" geocodes to this
+_GENERIC_THRESHOLD_M = 50  # metres
+
+
+def is_toronto_coords(lat: float, lon: float) -> bool:
+    """Return True if coords are within Toronto city bounds."""
+    return (TORONTO_LAT_MIN <= lat <= TORONTO_LAT_MAX and
+            TORONTO_LON_MIN <= lon <= TORONTO_LON_MAX)
+
+
+def is_generic_geocode(lat: float, lon: float) -> bool:
+    """Return True if coords are the generic city-center fallback (no real address)."""
+    return haversine_m(lat, lon, _TORONTO_GENERIC[0], _TORONTO_GENERIC[1]) < _GENERIC_THRESHOLD_M
+
+
+
 
 def load_ttc_stations() -> List[Dict]:
     with open(TTC_STATIONS_FILE) as f:
@@ -100,6 +123,10 @@ def is_within_range(
     """
     if listing_lat is None or listing_lon is None:
         return False, float("inf"), "no_coords"
+    if not is_toronto_coords(listing_lat, listing_lon):
+        return False, float("inf"), "outside_toronto"
+    if is_generic_geocode(listing_lat, listing_lon):
+        return False, float("inf"), "generic_geocode"
 
     ttc_dist, ttc_name = nearest_ttc(listing_lat, listing_lon, ttc_stations)
     if ttc_dist <= max_m:

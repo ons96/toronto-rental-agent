@@ -1,117 +1,125 @@
-"""Craigslist Toronto rental scraper via RSS + HTML fallback."""
+"""Craigslist Toronto rental scraper - HTML search."""
 import re
 import logging
-import xml.etree.ElementTree as ET
-from typing import List, Dict, Any
+import time
+from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup
 from .base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
+BASE = "https://toronto.craigslist.org"
+
 
 class CraigslistScraper(BaseScraper):
     name = "craigslist"
-    base_url = "https://toronto.craigslist.org"
+    use_curl_cffi = False
 
-    # RSS feeds - most reliable for Craigslist
-    RSS_FEEDS = [
-        "/search/tor/apa.rss",  # apartments
-        "/search/tor/roo.rss",  # rooms
-        "/search/tor/sub.rss",  # sublets
+    SEARCH_PATHS = [
+        "/search/apa",   # apartments
+        "/search/roo",   # rooms
+        "/search/sub",   # sublets
     ]
 
     def scrape(self) -> List[Dict[str, Any]]:
         listings = []
-        for feed_path in self.RSS_FEEDS:
-            url = f"{self.base_url}{feed_path}?max_price={self.rent_limit}&availabilityMode=0"
+        for path in self.SEARCH_PATHS:
+            url = f"{BASE}{path}?max_price={self.rent_limit}&availabilityMode=0"
             resp = self._get(url)
             if not resp:
-                # Fallback to HTML
-                listings.extend(self._scrape_html(feed_path.replace('.rss', '')))
                 continue
-            items = self._parse_rss(resp.text)
+            items = self._parse_page(resp.text)
             listings.extend(items)
             self._sleep()
+        # Fetch coords from detail pages (rate limited: 1 req/sec)
+        listings = self._enrich_coords(listings)
         logger.info(f"[craigslist] Found {len(listings)} listings")
         return [self._normalize(l) for l in listings]
 
-    def _parse_rss(self, xml_text: str) -> List[Dict]:
-        results = []
-        try:
-            root = ET.fromstring(xml_text)
-            ns = {"cl": "http://www.craigslist.org/about/basics"}
-            channel = root.find("channel")
-            if channel is None:
-                return []
-            for item in channel.findall("item"):
-                title = (item.findtext("title") or "").strip()
-                link = (item.findtext("link") or "").strip()
-                desc_html = item.findtext("description") or ""
-                price_el = item.find("cl:price", ns)
-                price_text = price_el.text if price_el is not None else "0"
-
-                price = self._parse_price(price_text)
-                if price > self.rent_limit or price == 0:
-                    continue
-
-                # Extract image from description HTML
-                img_match = re.search(r'src="([^"]+)"', desc_html)
-                img = img_match.group(1) if img_match else ""
-
-                # Extract plain text description
-                soup = BeautifulSoup(desc_html, "lxml")
-                desc = soup.get_text(strip=True)
-
-                listing_id = ""
-                m = re.search(r'/(\d+)\.html', link)
-                if m:
-                    listing_id = m.group(1)
-
-                results.append({
-                    "id": f"craigslist_{listing_id}",
-                    "url": link,
-                    "title": title,
-                    "price": price,
-                    "address": "Toronto, ON",
-                    "description": desc,
-                    "image_url": img,
-                })
-        except ET.ParseError as e:
-            logger.warning(f"[craigslist] RSS parse error: {e}")
-        return results
-
-    def _scrape_html(self, path: str) -> List[Dict]:
-        """HTML fallback for craigslist."""
-        url = f"{self.base_url}{path}?max_price={self.rent_limit}&availabilityMode=0"
-        resp = self._get(url)
-        if not resp:
-            return []
-        soup = BeautifulSoup(resp.text, "lxml")
-        results = []
-        for li in soup.select(".result-row, li.cl-search-result"):
+    def _enrich_coords(self, listings: List[Dict]) -> List[Dict]:
+        """Fetch lat/lon from detail pages. Max 80 pages to stay fast."""
+        enriched = []
+        for listing in listings[:80]:  # Cap at 80 detail page fetches per run
+            url = listing.get("url", "")
+            if not url:
+                enriched.append(listing)
+                continue
             try:
-                link_el = li.select_one("a.result-title, a.cl-app-anchor")
-                price_el = li.select_one(".result-price, .priceinfo")
-                if not link_el:
+                resp = self._get(url)
+                if resp:
+                    lat, lon = self._extract_coords(resp.text)
+                    if lat and lon:
+                        listing["lat"] = lat
+                        listing["lon"] = lon
+                        # Also extract neighborhood from body
+                        addr = self._extract_neighborhood(resp.text)
+                        if addr:
+                            listing["address"] = addr
+                time.sleep(0.8)  # Respect CL rate limit
+            except Exception as e:
+                logger.debug(f"[craigslist] detail fetch error: {e}")
+            enriched.append(listing)
+        # Append remaining without coords
+        enriched.extend(listings[80:])
+        return enriched
+
+    @staticmethod
+    def _extract_coords(html: str) -> Tuple[Optional[float], Optional[float]]:
+        import re
+        lat_m = re.search(r'data-latitude="([^"]+)"', html)
+        lon_m = re.search(r'data-longitude="([^"]+)"', html)
+        if lat_m and lon_m:
+            try:
+                return float(lat_m.group(1)), float(lon_m.group(1))
+            except ValueError:
+                pass
+        return None, None
+
+    @staticmethod
+    def _extract_neighborhood(html: str) -> str:
+        """Extract neighborhood/area from CL posting."""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+        # CL shows neighborhood in () after title e.g. "Room for rent (Annex)"
+        title_el = soup.select_one("#titletextonly, span.postingtitletext")
+        if title_el:
+            import re
+            m = re.search(r'\(([^)]+)\)', title_el.get_text())
+            if m:
+                return f"{m.group(1)}, Toronto, ON"
+        return ""
+
+    def _parse_page(self, html: str) -> List[Dict]:
+        soup = BeautifulSoup(html, "lxml")
+        results = []
+        for li in soup.select("li[class*=result], li.cl-static-search-result"):
+            try:
+                a = li.select_one("a[href]")
+                if not a:
                     continue
-                link = link_el.get("href", "")
-                title = link_el.get_text(strip=True)
+                link = a["href"]
+                if not link.startswith("http"):
+                    link = BASE + link
+                title = a.get_text(strip=True) or li.get("title", "")
+                price_el = li.select_one(".priceinfo, .price, [class*=price]")
                 price = self._parse_price(price_el.get_text() if price_el else "0")
                 if price > self.rent_limit or price == 0:
                     continue
-                m = re.search(r'/(\d+)\.html', link)
-                lid = m.group(1) if m else link
+                img_el = li.select_one("img")
+                img = img_el.get("src", "") if img_el else ""
+                m = re.search(r'/([\d]+)\.html', link)
+                lid = m.group(1) if m else re.sub(r'\W', '_', link[-20:])
                 results.append({
                     "id": f"craigslist_{lid}",
                     "url": link,
                     "title": title,
                     "price": price,
                     "address": "Toronto, ON",
-                    "description": "",
-                    "image_url": "",
+                    "description": li.get("title", ""),
+                    "image_url": img,
                 })
             except Exception as e:
-                logger.debug(f"[craigslist] html parse error: {e}")
+                logger.debug(f"[craigslist] parse error: {e}")
         return results
 
     @staticmethod

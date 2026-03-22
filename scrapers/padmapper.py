@@ -1,129 +1,80 @@
-"""Padmapper Toronto scraper - uses their GraphQL API."""
+"""Padmapper Toronto scraper - parses inline JSON (listables key in HTML)."""
 import re
-import logging
 import json
-from typing import List, Dict, Any
+import logging
+from typing import List, Dict, Any, Optional
 from .base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
-GRAPHQL_QUERY = """
-query GetListings($filters: ListingFilters!) {
-  listings(filters: $filters) {
-    id
-    title
-    price
-    address
-    lat
-    lng
-    photoUrls
-    description
-    bedrooms
-    bathrooms
-    source
-    sourceUrl
-  }
-}
-"""
+BASE = "https://www.padmapper.com"
 
 
 class PadmapperScraper(BaseScraper):
     name = "padmapper"
-    GRAPHQL_URL = "https://www.padmapper.com/api/t/1/graphql"
-    JSON_API = "https://www.padmapper.com/api/t/1/listings"
-    WEB_URL = "https://www.padmapper.com"
+    use_curl_cffi = True
 
     def scrape(self) -> List[Dict[str, Any]]:
         listings = []
-        # Try JSON API (same backend as Zumper)
-        results = self._scrape_json_api()
-        if not results:
-            results = self._scrape_web()
-        listings.extend(results)
+        url = f"{BASE}/apartments/toronto-on"
+        resp = self._get(url)
+        if resp:
+            listings.extend(self._extract_listings(resp.text))
         logger.info(f"[padmapper] Found {len(listings)} listings")
         return [self._normalize(l) for l in listings]
 
-    def _scrape_json_api(self) -> List[Dict]:
-        """Padmapper shares backend infra with Zumper."""
-        params = {
-            "order_by": "ranked",
-            "page": 1,
-            "rent_max": self.rent_limit,
-            "box": "43.58,-79.64,43.86,-79.11",  # Toronto bounding box
-        }
+    def _extract_listings(self, html: str) -> List[Dict]:
         results = []
-        for page in range(1, 4):
-            params["page"] = page
-            resp = self._get(
-                self.JSON_API,
-                params=params,
-                headers={
-                    **self.session.headers,
-                    "Accept": "application/json",
-                    "Referer": "https://www.padmapper.com/apartments/toronto-on",
-                },
-            )
-            if not resp:
-                break
+        for key in ["listables", "spotlight", "featured"]:
+            m = re.search(f'"' + key + r'":\s*(\[)', html)
+            if not m:
+                continue
+            start = m.start(1)
+            depth, end = 0, start
+            for i, ch in enumerate(html[start:start + 500000]):
+                if ch == "[": depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end = start + i + 1
+                        break
             try:
-                data = resp.json()
-            except Exception:
-                break
-            items = data if isinstance(data, list) else data.get("listings", data.get("data", []))
-            if not items:
-                break
-            for item in items:
-                parsed = self._parse_item(item)
-                if parsed:
-                    results.append(parsed)
-            self._sleep()
+                arr = json.loads(html[start:end])
+                for item in arr:
+                    if isinstance(item, dict) and "listing_id" in item:
+                        parsed = self._parse_item(item)
+                        if parsed:
+                            results.append(parsed)
+            except Exception as e:
+                logger.debug(f"[padmapper] parse {key}: {e}")
         return results
 
-    def _scrape_web(self) -> List[Dict]:
-        url = f"{self.WEB_URL}/apartments/toronto-on?rent-max={self.rent_limit}"
-        resp = self._get(url)
-        if not resp:
-            return []
-        results = []
-        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', resp.text, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(1))
-                props = data.get("props", {}).get("pageProps", {})
-                items = props.get("listings") or props.get("initialListings") or []
-                for item in items:
-                    parsed = self._parse_item(item)
-                    if parsed:
-                        results.append(parsed)
-            except json.JSONDecodeError:
-                pass
-        return results
-
-    def _parse_item(self, item: Dict) -> Dict | None:
+    def _parse_item(self, item: Dict) -> Optional[Dict]:
         try:
-            price = item.get("price") or item.get("rent") or 0
-            if isinstance(price, (list, tuple)):
-                price = price[0] if price else 0
-            price = int(price)
-            if price > self.rent_limit or price == 0:
+            price = item.get("min_price") or item.get("max_price") or 0
+            if not price or price > self.rent_limit:
                 return None
-            lid = str(item.get("id", ""))
-            photos = item.get("photoUrls") or item.get("photos") or item.get("images") or []
-            img = photos[0] if photos and isinstance(photos[0], str) else ""
-            source_url = item.get("sourceUrl") or item.get("url") or f"{self.WEB_URL}/apartments/toronto-on/{lid}"
+            lid = str(item.get("listing_id", ""))
+            url = item.get("padmapper_url") or item.get("url") or ""
+            if url and not url.startswith("http"):
+                url = BASE + url
+            img = ""
+            image_ids = item.get("image_ids", [])
+            if image_ids:
+                img = f"https://images.zumper.com/listing-images/{image_ids[0]}/large.jpg"
             return {
                 "id": f"padmapper_{lid}",
-                "url": source_url,
-                "title": item.get("title") or item.get("name") or item.get("address", ""),
-                "price": price,
-                "address": item.get("address") or "Toronto, ON",
-                "description": item.get("description") or item.get("summary") or "",
+                "url": url or f"{BASE}/apartments/toronto-on/{lid}",
+                "title": item.get("title") or item.get("building_name") or item.get("address", ""),
+                "price": int(price),
+                "address": item.get("address", "Toronto, ON"),
+                "description": item.get("short_description") or "",
                 "image_url": img,
-                "lat": item.get("lat") or item.get("latitude"),
-                "lon": item.get("lng") or item.get("longitude"),
-                "bedrooms": item.get("bedrooms"),
-                "bathrooms": item.get("bathrooms"),
+                "lat": item.get("lat"),
+                "lon": item.get("lng"),
+                "bedrooms": item.get("min_bedrooms"),
+                "bathrooms": item.get("min_bathrooms"),
             }
         except Exception as e:
-            logger.debug(f"[padmapper] parse error: {e}")
+            logger.debug(f"[padmapper] item error: {e}")
             return None
