@@ -22,6 +22,8 @@ data/fb_cookies.json
 # Data (keep structure, not content)
 data/*.db
 data/*.json
+data/*.html
+data/*.txt
 !data/ttc_stations.json
 !data/listings.csv
 
