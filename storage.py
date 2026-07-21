@@ -1,12 +1,67 @@
 """Storage layer: SQLite for listings, JSON for seen-IDs dedup."""
 import json
 import logging
+import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+# ── Schema constants (shared by Store._init_db and the module-level init_db) ──
+
+LISTINGS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS listings (
+    id TEXT PRIMARY KEY,
+    source TEXT,
+    url TEXT,
+    title TEXT,
+    price INTEGER,
+    address TEXT,
+    description TEXT,
+    image_url TEXT,
+    lat REAL,
+    lon REAL,
+    bedrooms TEXT,
+    bathrooms TEXT,
+    nearest_transit TEXT,
+    transit_dist_m REAL,
+    private_room INTEGER,
+    occupants INTEGER,
+    cleanliness INTEGER,
+    landlord_vibe INTEGER,
+    scam_risk INTEGER,
+    lease_flexibility INTEGER,
+    move_in_match INTEGER,
+    furniture_match INTEGER,
+    reasoning TEXT,
+    score REAL,
+    notified INTEGER DEFAULT 0,
+    scraped_at TEXT,
+    notified_at TEXT
+);
+"""
+
+API_KEYS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS api_keys (
+    key TEXT PRIMARY KEY,
+    tier TEXT NOT NULL,
+    contact TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    active INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+API_USAGE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS api_usage (
+    key TEXT NOT NULL,
+    date TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, date)
+);
+CREATE INDEX IF NOT EXISTS idx_api_usage_date ON api_usage(date);
+"""
 
 
 class Store:
@@ -51,34 +106,10 @@ class Store:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS listings (
-                id              TEXT PRIMARY KEY,
-                source          TEXT,
-                url             TEXT,
-                title           TEXT,
-                price           INTEGER,
-                address         TEXT,
-                description     TEXT,
-                image_url       TEXT,
-                lat             REAL,
-                lon             REAL,
-                bedrooms        TEXT,
-                bathrooms       TEXT,
-                nearest_transit TEXT,
-                transit_dist_m  REAL,
-                private_room    INTEGER,
-                occupants       INTEGER,
-                cleanliness     INTEGER,
-                landlord_vibe   INTEGER,
-                scam_risk       INTEGER,
-                reasoning       TEXT,
-                score           REAL,
-                notified        INTEGER DEFAULT 0,
-                scraped_at      TEXT,
-                notified_at     TEXT
-            )
-        """)
+        conn.executescript(
+            LISTINGS_SCHEMA_SQL + API_KEYS_SCHEMA_SQL + API_USAGE_SCHEMA_SQL
+        )
+        _seed_demo_key(conn)
         conn.commit()
         return conn
 
@@ -173,3 +204,217 @@ class Store:
         return len(rows)
     def close(self):
         self.conn.close()
+
+
+# ── Module-level API helpers (for the FastAPI layer) ──────────────────────────
+# These operate on the same data/listings.db file as the Store class but use
+# short-lived connections so the API process does not hold a long-lived
+# single-writer connection open (the CLI Store owns one for its run).
+# ponytail: SQLite single-writer is the ceiling. The API runs as one uvicorn
+# process (--workers 1) so there is no write contention. Upgrade path: move
+# usage counting to Redis (INCR + EXPIRE) if you scale to multiple workers or
+# need sub-millisecond counters; SQLite stays the source of truth for keys.
+
+DEMO_KEY = "demo-free-key"
+
+# Tier -> daily request cap. None means unlimited (ultra tier).
+TIER_LIMITS: Dict[str, Optional[int]] = {
+    "free": 100,
+    "basic": 5000,
+    "pro": 50000,
+    "ultra": None,
+}
+
+DEFAULT_DB_PATH = str(Path("data/listings.db"))
+
+
+def _db_path() -> str:
+    return os.environ.get("RENTAL_DB_FILE", DEFAULT_DB_PATH)
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path(), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(db_path: Optional[str] = None) -> None:
+    """Ensure the schema + demo key exist. Safe to call on every boot."""
+    path = db_path or _db_path()
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(
+        LISTINGS_SCHEMA_SQL + API_KEYS_SCHEMA_SQL + API_USAGE_SCHEMA_SQL
+    )
+    _seed_demo_key(conn)
+    conn.commit()
+    conn.close()
+
+
+def _seed_demo_key(conn: sqlite3.Connection) -> None:
+    """Seed the demo free key on init if the api_keys table is empty."""
+    n = conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()[0]
+    if n == 0:
+        conn.execute(
+            "INSERT INTO api_keys(key, tier, contact) VALUES (?,?,?)",
+            (DEMO_KEY, "free", "demo/test key, intentionally public"),
+        )
+
+
+def get_api_key(key: str) -> Optional[Dict[str, Any]]:
+    """Return the api_keys row for ``key`` if active, else None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM api_keys WHERE key=? AND active=1", (key,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def today_usage(key: str) -> int:
+    """Today's (UTC) request count for ``key`` (0 if none yet)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT count FROM api_usage WHERE key=? AND date=?",
+            (key, _today_utc()),
+        ).fetchone()
+    return int(row["count"]) if row else 0
+
+
+def incr_usage(key: str) -> int:
+    """Atomically increment today's counter and return the new value."""
+    today = _today_utc()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO api_usage(key, date, count) VALUES (?,?,1)
+            ON CONFLICT(key, date) DO UPDATE SET count = count + 1
+            """,
+            (key, today),
+        )
+        row = conn.execute(
+            "SELECT count FROM api_usage WHERE key=? AND date=?",
+            (key, today),
+        ).fetchone()
+        conn.commit()
+    return int(row["count"]) if row else 1
+
+
+def tier_limit(tier: str) -> Optional[int]:
+    """Daily request cap for ``tier`` (None = unlimited)."""
+    return TIER_LIMITS.get(tier)
+
+
+def add_api_key(key: str, tier: str, contact: str = "") -> None:
+    """Insert (or reactivate) an API key. Used by an admin CLI / deploy."""
+    if tier not in TIER_LIMITS:
+        raise ValueError(f"unknown tier: {tier}")
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO api_keys(key, tier, contact, active) VALUES (?,?,?,1)
+            ON CONFLICT(key) DO UPDATE SET tier=excluded.tier, contact=excluded.contact, active=1
+            """,
+            (key, tier, contact),
+        )
+        conn.commit()
+
+
+# ── Listing query helpers (read-only, for the API endpoints) ─────────────────
+
+def _row_to_public(row: sqlite3.Row) -> Dict[str, Any]:
+    """Shape a listing row into the public API response."""
+    d = dict(row)
+    return {
+        "id": d.get("id"),
+        "source": d.get("source"),
+        "url": d.get("url"),
+        "title": d.get("title"),
+        "price": d.get("price"),
+        "address": d.get("address"),
+        "image_url": d.get("image_url"),
+        "lat": d.get("lat"),
+        "lon": d.get("lon"),
+        "bedrooms": d.get("bedrooms"),
+        "bathrooms": d.get("bathrooms"),
+        "nearest_transit": d.get("nearest_transit"),
+        "transit_dist_m": d.get("transit_dist_m"),
+        "score": d.get("score"),
+        "classification": {
+            "private_room": bool(d.get("private_room", True)),
+            "occupants": d.get("occupants"),
+            "cleanliness": d.get("cleanliness"),
+            "landlord_vibe": d.get("landlord_vibe"),
+            "scam_risk": d.get("scam_risk"),
+            "lease_flexibility": d.get("lease_flexibility"),
+            "move_in_match": d.get("move_in_match"),
+            "furniture_match": d.get("furniture_match"),
+            "reasoning": d.get("reasoning"),
+        },
+        "scraped_at": d.get("scraped_at"),
+    }
+
+
+def count_listings() -> int:
+    with _connect() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0])
+
+
+def last_scrape_at() -> Optional[str]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(scraped_at) AS m FROM listings"
+        ).fetchone()
+    return row["m"] if row and row["m"] is not None else None
+
+
+def db_health() -> Dict[str, Any]:
+    """Counts + freshness for /health."""
+    return {
+        "listings": count_listings(),
+        "last_scrape_at": last_scrape_at(),
+    }
+
+
+def get_top_listings(
+    n: int = 20,
+    rent_limit: Optional[int] = None,
+    max_walking_m: Optional[int] = None,
+    min_cleanliness: Optional[int] = None,
+    min_landlord_vibe: Optional[int] = None,
+    max_scam_risk: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Top-N scored listings with optional filters. Returns public-shaped dicts."""
+    sql = (
+        "SELECT * FROM listings WHERE score IS NOT NULL "
+        "AND (:rent_limit IS NULL OR price <= :rent_limit) "
+        "AND (:max_walking_m IS NULL OR transit_dist_m IS NULL OR transit_dist_m <= :max_walking_m) "
+        "AND (:min_cleanliness IS NULL OR cleanliness >= :min_cleanliness) "
+        "AND (:min_landlord_vibe IS NULL OR landlord_vibe >= :min_landlord_vibe) "
+        "AND (:max_scam_risk IS NULL OR scam_risk >= :max_scam_risk) "
+        "ORDER BY score DESC LIMIT :n"
+    )
+    params = {
+        "rent_limit": rent_limit,
+        "max_walking_m": max_walking_m,
+        "min_cleanliness": min_cleanliness,
+        "min_landlord_vibe": min_landlord_vibe,
+        "max_scam_risk": max_scam_risk,
+        "n": n,
+    }
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_public(r) for r in rows]
+
+
+def get_listing_by_id(listing_id: str) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM listings WHERE id = ?", (listing_id,)
+        ).fetchone()
+    return _row_to_public(row) if row else None

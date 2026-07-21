@@ -299,3 +299,97 @@ toronto-rental-agent/
 - Nominatim usage follows OSM rate limit (1 req/sec, User-Agent set)
 - For personal rental search use only
 - Do not deploy at high frequency or commercial scale
+
+---
+
+## API Mode
+
+The scraper pipeline can also be served as a REST API with RapidAPI-style
+usage caps, for deployment as a paid API product. The API layer is additive:
+it reuses `storage.py` / `scorer.py` / `geo.py` and does NOT modify the CLI
+scraper (`main.py` / `classifier.py` / `notifier.py` stay functional for your
+own scraping).
+
+### Run locally
+
+```bash
+uv venv .venv --python 3.12
+uv pip install -r requirements.txt
+uv run uvicorn src.api:app --port 8101
+# or: uv run python -m src.api
+# Swagger docs at http://localhost:8101/docs
+```
+
+Inline smoke test (no network, no real LLM call):
+
+```bash
+uv run python -m src.api --smoke
+```
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | none | Liveness + DB listing count + last scrape time. Not counted. |
+| GET | `/listings/top` | counted | Top-N scored listings with filters (`rent_limit`, `max_walking_m`, `min_cleanliness`, `min_landlord_vibe`, `max_scam_risk`). |
+| GET | `/listings/{id}` | counted | Single listing with full detail + classification. 404 if not found. |
+| POST | `/classify` | counted | Classify a listing dict `{title, price, address, description}` on general quality (generic prompt, no personal data). Falls back to a default classification on LLM failure (never 500). |
+| GET | `/stations` | counted | TTC subway stations within `radius_m` of a `lat`/`lon` point. |
+| POST | `/scrape/refresh` | counted + Pro+ | Trigger a scrape cycle (`python main.py --scrape-only`, 300s timeout). 503 on failure. |
+
+Auth: send `X-RapidAPI-Proxy-Secret` (RapidAPI injects this) or `X-API-Key`
+(direct customers). Missing/unknown key = 401. Over the daily limit = 429
+with `resets_at` (next midnight UTC).
+
+### Usage tiers
+
+| Tier | Daily requests | Notes |
+|---|---|---|
+| free | 100 | Demo key `demo-free-key` works for testing (intentionally public). |
+| basic | 5,000 | Personal bots, light feeds. |
+| pro | 50,000 | Includes `/scrape/refresh`. |
+| ultra | unlimited | High-volume platforms. |
+
+Keys + usage are stored in the same SQLite DB (`data/listings.db`) in
+`api_keys` and `api_usage` tables. Add a key with:
+
+```bash
+uv run python -c "import storage; storage.add_api_key('YOUR_KEY','basic','customer email')"
+```
+
+### LLM provider for `/classify`
+
+The API's `/classify` endpoint uses a GENERIC prompt (general listing quality)
+and reads keys from env vars only -- it does NOT use the personal prompt or
+any hardcoded key from `classifier.py`. Default provider is `gateway` (the
+free LLM gateway on VPS-40):
+
+```bash
+export RENTAL_LLM_PROVIDER=gateway
+export VPS_GATEWAY_URL=http://localhost:8000/v1
+export VPS_GATEWAY_API_KEY=your-gateway-key
+export RENTAL_LLM_MODEL=coding-fast
+```
+
+### Deploy to VPS-40
+
+```bash
+bash deploy/vps40-deploy.sh
+```
+
+Idempotent. Installs a systemd unit `rental-agent-api.service` on port 8101
+(avoids 8100 = pixel-deals, 8000 = gateway) with `--workers 1` (SQLite
+single-writer) and `MemoryMax=180M` (VPS-40 is RAM-tight). See the deploy
+script header for the iptables line to open 8101 to Tailscale (documented
+only, not run automatically).
+
+The deploy inits an empty listings DB. Populate it with
+`uv run python main.py --scrape-only` (cron or manual). Some scrapers need a
+residential IP; enable only datacenter-safe scrapers in `config.json` on the
+VPS.
+
+### RapidAPI listing
+
+See `docs/RAPIDAPI_LISTING.md` for the RapidAPI marketplace listing copy
+(name, tagline, description, use cases, endpoint table, pricing tiers, sample
+code).

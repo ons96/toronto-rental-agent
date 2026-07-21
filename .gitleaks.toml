@@ -1,0 +1,27 @@
+# gitleaks config for toronto-rental-agent
+# Extends the default gitleaks ruleset with allowlists for the intentionally
+# public demo API key used in deploy smoke tests.
+# See: https://github.com/gitleaks/gitleaks
+
+title = "toronto-rental-agent"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "deploy/vps40-deploy.sh smoke-test curls use the intentionally public demo-free-key (not a real secret). Scoped to this one file; a real secret added here later would NOT be caught by CI gitleaks, so rely on the local pre-push hook as a second layer."
+paths = [
+  '''deploy/vps40-deploy\.sh''',
+]
+
+[[allowlists]]
+description = "demo-free-key is an intentionally public test key for the API usage-cap demo tier, not a real secret"
+regexes = [
+  '''demo-free-key''',
+]
+
+[[allowlists]]
+description = "REDACTED_SUPACODER_KEY placeholder left after history scrub (not a real key)"
+regexes = [
+  '''REDACTED_SUPACODER_KEY''',
+]
