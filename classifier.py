@@ -155,6 +155,9 @@ def _parse_response(raw: Optional[str]) -> Dict:
             "cleanliness": max(1, min(5, int(data.get("cleanliness", 3)))),
             "landlord_vibe": max(1, min(5, int(data.get("landlord_vibe", 3)))),
             "scam_risk": max(1, min(5, int(data.get("scam_risk", 3)))),
+            "lease_flexibility": max(1, min(5, int(data.get("lease_flexibility", 3)))),
+            "move_in_match": max(1, min(5, int(data.get("move_in_match", 3)))),
+            "furniture_match": max(1, min(5, int(data.get("furniture_match", 3)))),
             "reasoning": str(data.get("reasoning", ""))[:500],
         }
     except (json.JSONDecodeError, ValueError, TypeError) as e:
@@ -169,6 +172,9 @@ def _default_classification() -> Dict:
         "cleanliness": 3,
         "landlord_vibe": 3,
         "scam_risk": 3,
+        "lease_flexibility": 3,
+        "move_in_match": 3,
+        "furniture_match": 3,
         "reasoning": "Classification unavailable.",
     }
 

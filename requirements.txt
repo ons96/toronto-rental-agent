@@ -15,7 +15,7 @@ python-telegram-bot>=21.0
 
 # LLM
 openai>=1.30.0
-anthropicAPI>=0.25.0
+anthropic>=0.25.0
 
 # Storage
 # sqlite3 is stdlib
@@ -34,3 +34,8 @@ ratelimit>=2.2.1
 # Anti-bot / TLS fingerprint spoofing
 curl_cffi>=0.7.0
 cloudscraper>=1.2.71
+
+# API layer (FastAPI service)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
